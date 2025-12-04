@@ -14,9 +14,8 @@ def load_labels(path="labels.json"):
     return id_to_label
 
 class AttendanceTracker:
-    def __init__(self, cooldown_minutes=0.5, enable_telegram=True):  # 0.5 minutes = 30 seconds
-        self.cooldown_minutes = cooldown_minutes
-        self.user_status = {}  # {name: {"status": "in"/"out", "last_time": datetime, "last_notified": datetime}}
+    def __init__(self, enable_telegram=True):
+        self.user_status = {}  # {name: "Entry"/"Exit"}
         self.load_today_status()
         
         # Initialize Telegram
@@ -53,55 +52,20 @@ class AttendanceTracker:
                     parts = line.strip().split(",")
                     if len(parts) >= 4:
                         name, action = parts[2], parts[3]
-                        time_str = parts[1]
-                        last_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
-                        self.user_status[name] = {
-                            "status": action,
-                            "last_time": last_time,
-                            "last_notified": last_time  # Track last notification separately
-                        }
-    
-    def can_mark(self, name):
-        """Check if enough time has passed since last marking"""
-        if name not in self.user_status:
-            return True
-        
-        last_time = self.user_status[name]["last_time"]
-        now = datetime.now()
-        time_diff = (now - last_time).total_seconds() / 60
-        
-        return time_diff >= self.cooldown_minutes
-    
-    def should_notify(self, name):
-        """Check if we should send Telegram notification (separate from cooldown)"""
-        if name not in self.user_status:
-            return True
-        
-        if "last_notified" not in self.user_status[name]:
-            return True
-        
-        last_notified = self.user_status[name]["last_notified"]
-        now = datetime.now()
-        time_diff = (now - last_notified).total_seconds() / 60
-        
-        # Only notify if cooldown has passed
-        return time_diff >= self.cooldown_minutes
+                        self.user_status[name] = action
     
     def mark_attendance(self, name, confidence):
         """Mark entry or exit based on current status"""
-        if not self.can_mark(name):
-            return None
-        
         os.makedirs("attendance", exist_ok=True)
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M:%S")
         
-        # Determine action
+        # Determine action - toggle between Entry and Exit
         if name not in self.user_status:
             action = "Entry"
         else:
-            action = "Exit" if self.user_status[name]["status"] == "Entry" else "Entry"
+            action = "Exit" if self.user_status[name] == "Entry" else "Entry"
         
         csv_path = os.path.join("attendance", f"{date_str}.csv")
         exists = os.path.exists(csv_path)
@@ -111,18 +75,13 @@ class AttendanceTracker:
                 f.write("date,time,name,action,confidence\n")
             f.write(f"{date_str},{time_str},{name},{action},{confidence:.2f}\n")
         
-        # Update status immediately
-        self.user_status[name] = {
-            "status": action,
-            "last_time": now,
-            "last_notified": self.user_status.get(name, {}).get("last_notified", now)
-        }
+        # Update status
+        self.user_status[name] = action
         
-        # Send Telegram notification only if cooldown passed
-        if self.telegram and self.should_notify(name):
+        # Send Telegram notification on every status change
+        if self.telegram:
             message = format_attendance_message(name, action, time_str, confidence)
             self.telegram.send_sync(message)
-            self.user_status[name]["last_notified"] = now
             print(f"[TELEGRAM] Notification sent for {name}")
         
         print(f"[OK] Marked {action}: {name} at {time_str} (conf={confidence:.2f})")
@@ -132,7 +91,7 @@ class AttendanceTracker:
         """Get current status of user"""
         if name not in self.user_status:
             return None
-        return self.user_status[name]["status"]
+        return self.user_status[name]
 
 def main():
     # Load trained LBPH model
@@ -158,7 +117,7 @@ def main():
 
     print("[OK] Attendance system running. Press 'q' to quit.")
     
-    tracker = AttendanceTracker(cooldown_minutes=0.5, enable_telegram=True)  # 30 seconds cooldown
+    tracker = AttendanceTracker(enable_telegram=True)
 
     window_name = "Attendance"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
