@@ -86,12 +86,13 @@ class AttendanceTracker:
         time_str = now.strftime("%H:%M:%S")
         
         # Determine action - toggle between Entry and Exit
-        if name not in self.user_status:
+        current_status = self.user_status.get(name)
+        if current_status is None:
             action = "Entry"
         else:
-            action = "Exit" if self.user_status[name] == "Entry" else "Entry"
+            action = "Exit" if current_status == "Entry" else "Entry"
         
-        # ✅ REMOVED: Don't prevent toggling - let it happen on each stable detection
+        print(f"[DEBUG] {name}: Current status={current_status}, Next action={action}")
         
         csv_path = os.path.join("attendance", f"{date_str}.csv")
         exists = os.path.exists(csv_path)
@@ -269,14 +270,18 @@ def main():
                     # ✅ FIXED: Mark when stable AND not already marked in this session
                     if current_person["stable_count"] >= required_stable_frames:
                         if name not in marked_this_session:
+                            print(f"[DEBUG] Marking {name} - marked_this_session: {list(marked_this_session.keys())}")
                             action = tracker.mark_attendance(name, confidence)
                             if action:
                                 notification["text"] = f"{action} Marked: {name}"
                                 notification["time"] = datetime.now()
-                                marked_this_session[name] = True
+                                marked_this_session[name] = action  # Store the action, not just True
+                                print(f"[DEBUG] Added {name} to marked_this_session with action {action}")
+                        else:
+                            print(f"[DEBUG] {name} already in marked_this_session with action {marked_this_session[name]}")
                         # Keep stable_count at required level, don't reset to 0
-                        # This prevents continuous re-marking while person stays visible
                         current_person["stable_count"] = required_stable_frames
+
                 else:
                     # ✅ Face not recognized with good confidence
                     if current_person["stable_count"] > 0:
@@ -288,10 +293,13 @@ def main():
         exited_people = tracker.check_exits(frame_count)
         for name in exited_people:
             # ✅ Clear marked session so they can toggle status next time they appear
-            marked_this_session.pop(name, None)
+            if name in marked_this_session:
+                print(f"[DEBUG] Removing {name} from marked_this_session (was {marked_this_session[name]})")
+                marked_this_session.pop(name, None)
             # ✅ Also reset current_person if it's the person who left
             if current_person["name"] == name:
                 current_person = {"name": "Unknown", "confidence": 0, "stable_count": 0}
+                print(f"[DEBUG] Reset current_person for {name}")
             print(f"[INFO] {name} left camera view - ready for status toggle on return")
 
         # Draw rectangles
