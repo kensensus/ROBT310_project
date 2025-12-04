@@ -8,6 +8,7 @@ except ImportError:
 import asyncio
 import json
 import os
+import sys
 
 def load_config():
     """Load Telegram bot configuration"""
@@ -29,51 +30,65 @@ class TelegramNotifier:
             raise ImportError("Telegram module not available")
         self.bot = Bot(token=token)
         self.chat_id = chat_id
+        self._loop = None
+    
+    def _get_or_create_loop(self):
+        """Get existing event loop or create a new one"""
+        try:
+            # Try to get the running loop
+            loop = asyncio.get_running_loop()
+            return loop, False  # Return existing loop, don't close it
+        except RuntimeError:
+            # No running loop, create a new one
+            if self._loop is None or self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+            return self._loop, True  # Return new loop, can close it
     
     def send_sync(self, message):
-        """Send message synchronously with proper event loop handling"""
+        """Send message synchronously - SIMPLIFIED VERSION"""
         try:
-            # Try to get the current event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # If we're already in an event loop, create a new thread
-                import threading
-                result = {'success': False, 'error': None}
-                
-                def run_in_thread():
-                    try:
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        new_loop.run_until_complete(
-                            self.bot.send_message(chat_id=self.chat_id, text=message)
-                        )
-                        new_loop.close()
-                        result['success'] = True
-                    except Exception as e:
-                        result['error'] = e
-                
-                thread = threading.Thread(target=run_in_thread)
-                thread.start()
-                thread.join(timeout=10)  # 10 second timeout
-                
-                if not result['success'] and result['error']:
-                    raise result['error']
-                    
-            except RuntimeError:
-                # No event loop running, create a new one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(
-                        self.bot.send_message(chat_id=self.chat_id, text=message)
-                    )
-                finally:
-                    loop.close()
-                    # Important: Clear the event loop to prevent conflicts
-                    asyncio.set_event_loop(None)
-                    
-            print(f"[TELEGRAM] Message sent successfully: {message[:50]}...")
+            # Force use of subprocess to avoid event loop conflicts
+            import subprocess
+            import tempfile
             
+            # Create a simple Python script to send the message
+            script = f'''
+import asyncio
+from telegram import Bot
+
+async def send():
+    bot = Bot(token="{self.bot.token}")
+    await bot.send_message(chat_id="{self.chat_id}", text="""{message}""")
+
+asyncio.run(send())
+'''
+            
+            # Write script to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(script)
+                script_path = f.name
+            
+            try:
+                # Run the script in a subprocess with timeout
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode == 0:
+                    print(f"[TELEGRAM] ✅ Message sent successfully")
+                else:
+                    print(f"[TELEGRAM] ❌ Send failed: {result.stderr}")
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(script_path)
+                except:
+                    pass
+                    
         except Exception as e:
             print(f"[TELEGRAM ERROR] Failed to send message: {e}")
             import traceback
