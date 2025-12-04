@@ -147,6 +147,32 @@ class AttendanceTracker:
         """Return current status for a user (or None)."""
         return self.user_status.get(name)
     
+    def mark_all_exit_on_close(self):
+        """Mark all users with Entry status as Exit when system closes"""
+        try:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            time_str = datetime.now().strftime("%H:%M:%S")
+            csv_path = os.path.join("attendance", f"{date_str}.csv")
+            
+            if not os.path.exists(csv_path):
+                return
+            
+            # Mark all Entry users as Exit
+            with open(csv_path, "a") as f:
+                for name, status in self.user_status.items():
+                    if status == "Entry":
+                        f.write(f"{date_str},{time_str},{name},Exit,0.00\n")
+                        print(f"[AUTO-EXIT] Marked {name} as Exit on system close")
+                        
+                        # Send Telegram notification
+                        if self.telegram:
+                            message = format_attendance_message(name, "Exit", time_str, 0)
+                            self.telegram.send_sync(message)
+            
+            print("[OK] All users marked as Exit")
+        except Exception as e:
+            print(f"[WARNING] Failed to mark users as Exit: {e}")
+    
 def main():
     # Load trained LBPH model
     if not os.path.exists("trainer.yml"):
@@ -303,6 +329,10 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+    # Mark all users as Exit before closing
+    print("Closing system...")
+    tracker.mark_all_exit_on_close()
+    
     cap.release()
     cv2.destroyAllWindows()
     print("Exiting attendance system.")
