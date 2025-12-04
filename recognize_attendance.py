@@ -16,6 +16,8 @@ def load_labels(path="labels.json"):
 class AttendanceTracker:
     def __init__(self, enable_telegram=True):
         self.user_status = {}  # {name: "Entry"/"Exit"}
+        self.currently_visible = {}  # {name: frame_count} - track who is currently in view
+        self.exit_grace_frames = 60  # ~2 seconds at 30fps before marking exit
         self.load_today_status()
         
         # Initialize Telegram
@@ -54,6 +56,21 @@ class AttendanceTracker:
                         name, action = parts[2], parts[3]
                         self.user_status[name] = action
     
+    def update_visibility(self, name, frame_count):
+        """Update that person is currently visible"""
+        self.currently_visible[name] = frame_count
+    
+    def check_exits(self, frame_count):
+        """Check if anyone has left the camera view"""
+        exited = []
+        for name, last_seen in list(self.currently_visible.items()):
+            if frame_count - last_seen > self.exit_grace_frames:
+                # Person hasn't been seen for grace period
+                if self.user_status.get(name) == "Entry":
+                    exited.append(name)
+                del self.currently_visible[name]
+        return exited
+    
     def mark_attendance(self, name, confidence):
         """Mark entry or exit based on current status"""
         os.makedirs("attendance", exist_ok=True)
@@ -87,12 +104,38 @@ class AttendanceTracker:
         print(f"[OK] Marked {action}: {name} at {time_str} (conf={confidence:.2f})")
         return action
     
-    def get_status(self, name):
-        """Get current status of user"""
-        if name not in self.user_status:
+    def mark_exit(self, name):
+        """Mark exit for a person who left camera view"""
+        if self.user_status.get(name) != "Entry":
             return None
-        return self.user_status[name]
-
+        
+        os.makedirs("attendance", exist_ok=True)
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M:%S")
+        
+        action = "Exit"
+        
+        csv_path = os.path.join("attendance", f"{date_str}.csv")
+        exists = os.path.exists(csv_path)
+        
+        with open(csv_path, "a") as f:
+            if not exists:
+                f.write("date,time,name,action,confidence\n")
+            f.write(f"{date_str},{time_str},{name},{action},0.00\n")
+        
+        # Update status
+        self.user_status[name] = action
+        
+        # Send Telegram notification
+        if self.telegram:
+            message = format_attendance_message(name, action, time_str, 0)
+            self.telegram.send_sync(message)
+            print(f"[TELEGRAM] Notification sent for {name}")
+        
+        print(f"[OK] Marked {action}: {name} at {time_str} (auto-exit)")
+        return action
+    
 def main():
     # Load trained LBPH model
     if not os.path.exists("trainer.yml"):
@@ -123,12 +166,13 @@ def main():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    threshold = 60  # Improved threshold
+    threshold = 60
     current_person = {"name": "Unknown", "confidence": 0, "stable_count": 0}
     required_stable_frames = 10
     frame_count = 0
-    frames_without_face = 0  # Track frames without detection
-    reset_threshold = 30  # Reset after ~1 second (30 frames at 30fps)
+    frames_without_face = 0
+    reset_threshold = 30
+    marked_this_session = {}  # Track who has been marked in this detection session
     
     # Notification system
     notification = {"text": "", "time": None, "duration": 3}
@@ -178,16 +222,35 @@ def main():
                     else:
                         current_person = {"name": name, "confidence": confidence, "stable_count": 1}
                     
+                    # Mark person as visible
+                    if name != "Unknown":
+                        tracker.update_visibility(name, frame_count)
+                    
                     if current_person["stable_count"] == required_stable_frames:
-                        action = tracker.mark_attendance(name, confidence)
-                        if action:
-                            notification["text"] = f"{action} Marked: {name}"
-                            notification["time"] = datetime.now()
+                        # Only mark if not already marked in this session
+                        if name not in marked_this_session:
+                            # Only mark Entry if person is not already "Entry" status
+                            if tracker.user_status.get(name) != "Entry":
+                                action = tracker.mark_attendance(name, confidence)
+                                if action:
+                                    notification["text"] = f"{action} Marked: {name}"
+                                    notification["time"] = datetime.now()
+                                    marked_this_session[name] = True
                 else:
                     if current_person["stable_count"] > 0:
                         current_person["stable_count"] -= 1
                     if current_person["stable_count"] == 0:
                         current_person = {"name": "Unknown", "confidence": 0, "stable_count": 0}
+        
+        # Check for exits (people who left camera view)
+        exited_people = tracker.check_exits(frame_count)
+        for name in exited_people:
+            action = tracker.mark_exit(name)
+            if action:
+                notification["text"] = f"{action} Marked: {name}"
+                notification["time"] = datetime.now()
+                # Remove from marked session so they can be marked Entry again
+                marked_this_session.pop(name, None)
         
         # Draw rectangles
         for (x, y, w, h) in faces:
