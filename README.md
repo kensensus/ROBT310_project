@@ -202,7 +202,3 @@ chmod +x run_with_venv.sh
 ## Credits
 
 Built with OpenCV and Python for ROBT 310 - Image Processing course project.
-
-## License
-
-MIT License - feel free to use and modify for educational purposes.
