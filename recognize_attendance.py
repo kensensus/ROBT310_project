@@ -91,10 +91,7 @@ class AttendanceTracker:
         else:
             action = "Exit" if self.user_status[name] == "Entry" else "Entry"
         
-        # ✅ FIXED: Don't mark if the status hasn't changed
-        if name in self.user_status and self.user_status[name] == action:
-            print(f"[SKIP] {name} already marked as {action}")
-            return None
+        # ✅ REMOVED: Don't prevent toggling - let it happen on each stable detection
         
         csv_path = os.path.join("attendance", f"{date_str}.csv")
         exists = os.path.exists(csv_path)
@@ -269,13 +266,15 @@ def main():
                         tracker.update_visibility(name, frame_count)
                     
                     if current_person["stable_count"] == required_stable_frames:
-                        # ✅ FIXED: Only mark if this person hasn't been marked yet OR their status needs to toggle
-                        # The mark_attendance function now handles duplicate prevention internally
-                        action = tracker.mark_attendance(name, confidence)
-                        if action:  # Only show notification if action was actually taken
-                            notification["text"] = f"{action} Marked: {name}"
-                            notification["time"] = datetime.now()
-                            marked_this_session[name] = True
+                        #Only mark if NOT already marked in this continuous session
+                        if name not in marked_this_session:
+                            action = tracker.mark_attendance(name, confidence)
+                            if action:
+                                notification["text"] = f"{action} Marked: {name}"
+                                notification["time"] = datetime.now()
+                                marked_this_session[name] = True
+                        # Reset stable count to prevent repeated marking while still in view
+                        current_person["stable_count"] = 0
                 else:
                     if current_person["stable_count"] > 0:
                         current_person["stable_count"] -= 1
@@ -285,9 +284,10 @@ def main():
         # Check for exits (people who left camera view)
         exited_people = tracker.check_exits(frame_count)
         for name in exited_people:
-            # Clear marked session so they can be re-detected and toggled properly
+            # Clear marked session so they can toggle status next time they appear
             marked_this_session.pop(name, None)
-        
+            print(f"[INFO] {name} left camera view - ready for status toggle on return")
+
         # Draw rectangles
         for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
