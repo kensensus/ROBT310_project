@@ -1,6 +1,9 @@
+import os
+# Prefer X11 backend for Qt to avoid missing Wayland plugin in some OpenCV builds
+# This must be set before importing cv2 so the Qt plugin selection happens correctly.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 import cv2
 import json
-import os
 from datetime import datetime, timedelta
 from telegram_bot import TelegramNotifier, format_attendance_message, load_config, TELEGRAM_AVAILABLE
 
@@ -61,15 +64,19 @@ class AttendanceTracker:
         self.currently_visible[name] = frame_count
     
     def check_exits(self, frame_count):
-        """Check if anyone has left the camera view"""
-        exited = []
+        """Remove people who haven't been seen recently from visibility tracking.
+
+        IMPORTANT: Do NOT auto-mark exits here. Disappearance from camera does
+        not imply an Exit event. Instead, we remove them from the `currently_visible`
+        map and return the list of removed names so the caller can clear any
+        per-session state (like `marked_this_session`) if desired.
+        """
+        removed = []
         for name, last_seen in list(self.currently_visible.items()):
             if frame_count - last_seen > self.exit_grace_frames:
-                # Person hasn't been seen for grace period
-                if self.user_status.get(name) == "Entry":
-                    exited.append(name)
+                removed.append(name)
                 del self.currently_visible[name]
-        return exited
+        return removed
     
     def mark_attendance(self, name, confidence):
         """Mark entry or exit based on current status"""
@@ -135,6 +142,10 @@ class AttendanceTracker:
         
         print(f"[OK] Marked {action}: {name} at {time_str} (auto-exit)")
         return action
+
+    def get_status(self, name):
+        """Return current status for a user (or None)."""
+        return self.user_status.get(name)
     
 def main():
     # Load trained LBPH model
@@ -229,13 +240,14 @@ def main():
                     if current_person["stable_count"] == required_stable_frames:
                         # Only mark if not already marked in this session
                         if name not in marked_this_session:
-                            # Only mark Entry if person is not already "Entry" status
-                            if tracker.user_status.get(name) != "Entry":
-                                action = tracker.mark_attendance(name, confidence)
-                                if action:
-                                    notification["text"] = f"{action} Marked: {name}"
-                                    notification["time"] = datetime.now()
-                                    marked_this_session[name] = True
+                            # Toggle attendance on each new stable detection (Entry -> Exit -> Entry ...)
+                            # Do not rely on disappearance to mark Exit — toggling happens when
+                            # the person next appears and is stably recognized.
+                            action = tracker.mark_attendance(name, confidence)
+                            if action:
+                                notification["text"] = f"{action} Marked: {name}"
+                                notification["time"] = datetime.now()
+                                marked_this_session[name] = True
                 else:
                     if current_person["stable_count"] > 0:
                         current_person["stable_count"] -= 1
@@ -245,12 +257,10 @@ def main():
         # Check for exits (people who left camera view)
         exited_people = tracker.check_exits(frame_count)
         for name in exited_people:
-            action = tracker.mark_exit(name)
-            if action:
-                notification["text"] = f"{action} Marked: {name}"
-                notification["time"] = datetime.now()
-                # Remove from marked session so they can be marked Entry again
-                marked_this_session.pop(name, None)
+            # Do NOT auto-mark exit when a user disappears from view.
+            # Instead, clear their marked session so they can be marked
+            # (Entry/Exit toggled) the next time they are positively detected.
+            marked_this_session.pop(name, None)
         
         # Draw rectangles
         for (x, y, w, h) in faces:
