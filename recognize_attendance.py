@@ -206,7 +206,7 @@ def main():
         print("[ERROR] Could not open camera.")
         return
     
-    # ✅ Improve camera settings for better image quality
+    # Improve camera settings for better image quality
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
@@ -286,7 +286,7 @@ def main():
         color = (0, 255, 0) if name_display != "Unknown" else (0, 0, 255)
         confidence_display = f"{current_person['confidence']:.1f}" if current_person['confidence'] > 0 else "-"
 
-        # ✅ Only recognize every other frame for better performance
+        # Only recognize every other frame for better performance
         recognize_this_frame = (frame_count % 2 == 0)
         
         if recognize_this_frame and len(faces) > 0:
@@ -296,7 +296,6 @@ def main():
             
             face_roi = gray_eq[y:y+h, x:x+w]
             
-            # ✅ Simplified quality check (faster)
             # Skip blur detection on every frame for performance
             if frame_count % 5 == 0:  # Only check blur every 5th frame
                 laplacian_var = cv2.Laplacian(face_roi, cv2.CV_64F).var()
